@@ -1,0 +1,194 @@
+
+
+# cd C:\Users\MyUser\Downloads\db_wow_classic
+# docker compose up
+
+# clean it all up:
+# docker container rm wowclassicdb; docker volume rm db_wow_classic_mysql-datavolume; docker compose up
+
+services:
+    db:
+        image: mysql:latest
+        container_name: wowclassicdb
+        entrypoint: ["/bin/sh","-c"]
+        ports:
+            - 3306:3306
+        command:
+        - |
+            export FIRST_RUN="false"
+            export PWD=`pwd`
+
+            echo "Checking if path /var/lib/mysql/mangos exists"
+            if [ ! -d /var/lib/mysql/mangos ]; then
+                echo "SQL Import not found. The first launch could take a long time. Be patient"
+                export FIRST_RUN="true"
+            fi
+
+            # Cleanups
+            if [ ! -d /var/lib/mysql/mangos ]; then
+                rm -rf /docker-entrypoint-initdb.d/*
+            fi
+
+            if [ "$$FIRST_RUN" == "true" ]; then
+                echo "grabbing and extracting $$MANGOSCLASSIC_URL"
+                curl -L --silent --output /tmp/master.tar.gz $$MANGOSCLASSIC_URL
+                cd /tmp
+                tar -xf /tmp/master.tar.gz
+                cd ..
+                rm /tmp/master.tar.gz
+                echo "Done!"
+
+                echo "Moving scripts to /docker-entrypoint-initdb.d/"
+                mv /tmp/mangos-classic-master/sql/create/db_create_mysql.sql /docker-entrypoint-initdb.d/01-db_create_mysql.sql
+                mv /tmp/mangos-classic-master/sql/base/mangos.sql /docker-entrypoint-initdb.d/02-mangos.sql
+                mv /tmp/mangos-classic-master/sql/base/characters.sql /docker-entrypoint-initdb.d/03-characters.sql
+                mv /tmp/mangos-classic-master/sql/base/realmd.sql /docker-entrypoint-initdb.d/04-realmd.sql
+                mv /tmp/mangos-classic-master/sql/base/logs.sql /docker-entrypoint-initdb.d/05-logs.sql
+
+
+                # https://github.com/cmangos/mangos-classic/blob/dd034ee07aa43f628e6fc892f41dbef3c0c5f2c0/sql/base/dbc/original_data/Spell.sql
+                #
+
+                # Any use with @localhost should be @% (any host)
+                sed -i 's/localhost/%/g' /docker-entrypoint-initdb.d/01-db_create_mysql.sql
+                # Remove dumb error if user exists
+                sed -i 's/CREATE USER IF NOT EXISTS/-- CREATE USER IF NOT EXISTS/g' /docker-entrypoint-initdb.d/01-db_create_mysql.sql
+
+                echo -e "\n\n" >> /docker-entrypoint-initdb.d/01-db_create_mysql.sql
+                echo "SET GLOBAL transaction_isolation = 'READ-COMMITTED';" >> /docker-entrypoint-initdb.d/01-db_create_mysql.sql
+                echo -e "\n" >> /docker-entrypoint-initdb.d/01-db_create_mysql.sql
+
+                # insert "Use <database> on top of file"
+                sed -i '1s/^/USE `classicmangos`;\n\n/' /docker-entrypoint-initdb.d/02-mangos.sql
+                sed -i '1s/^/USE `classiccharacters`;\n\n/' /docker-entrypoint-initdb.d/03-characters.sql
+                sed -i '1s/^/USE `classicrealmd`;\n\n/' /docker-entrypoint-initdb.d/04-realmd.sql
+                sed -i '1s/^/USE `classiclogs`;\n\n/' /docker-entrypoint-initdb.d/05-logs.sql
+
+                # Replace MyISAM with InnoDB"
+                sed -i 's/ENGINE=MyISAM/ENGINE=InnoDB/g' /docker-entrypoint-initdb.d/02-mangos.sql
+                sed -i 's/ENGINE=MyISAM/ENGINE=InnoDB/g' /docker-entrypoint-initdb.d/03-characters.sql
+                sed -i 's/ENGINE=MyISAM/ENGINE=InnoDB/g' /docker-entrypoint-initdb.d/04-realmd.sql
+                sed -i 's/ENGINE=MyISAM/ENGINE=InnoDB/g' /docker-entrypoint-initdb.d/05-logs.sql
+
+                # Get classicDB repo
+                echo "grabbing and extracting $$MANGOSCLASSICDB_URL"
+                curl -L --silent --output /tmp/master.tar.gz $$MANGOSCLASSICDB_URL
+                cd /tmp; tar -xf /tmp/master.tar.gz
+                rm /tmp/master.tar.gz
+                cd /tmp/classic-db-master/Full_DB/
+
+                FILE=`ls *.sql.gz | grep 'ClassicDB'`; mv "$$FILE" "06-FullDB.sql.gz"
+                echo "Using Full database: $$FILE"
+                FULL_DB_NAME=$$FILE
+
+                # Regex:
+                # (?<=_z) = look for the position right after _z without including _z (and what comes before it)
+                # \d = matches one or more digits
+                # (?=\.sql\.gz)') = ensure that the match is followed by .sql.gz without including .sql.gz in the match itself
+                DB_VERSION_CORE=$$(echo $$FULL_DB_NAME | grep -oP '(?<=_z)\d+(?=\.sql\.gz)')
+
+                gunzip "06-FullDB.sql.gz"
+                mv *.sql /docker-entrypoint-initdb.d/
+                sed -i '1s/^/USE `classicmangos`;\n\n/' /docker-entrypoint-initdb.d/06-FullDB.sql
+                sed -i 's/ENGINE=MyISAM/ENGINE=InnoDB/g' /docker-entrypoint-initdb.d/06-FullDB.sql
+                sed -i 's/ ROW_FORMAT=FIXED//g' /docker-entrypoint-initdb.d/06-FullDB.sql
+
+                # == Order:
+                # sql/updates/mangos          -> "{ADDITIONAL_PATH}Updates/"[0-9]*.sql
+                # apply_content_db            -> "{ADDITIONAL_PATH}Updates/Instances/"[0-9]*.sql
+                # apply_world_db_core_update  -> "CORE_PATH/sql/updates/{NEXT_MILESTONE}/
+                # apply_world_db_core_update  -> "CORE_PATH/sql/updates/mangos/*
+                # apply_char_db_core_update   -> "CORE_PATH/sql/updates/characters/"*characters_*.sql
+                # apply_realm_db_core_update  -> "CORE_PATH/sql/updates/realmd/"*realmd*.sql
+                # apply_logs_db_core_update   -> "CORE_PATH/sql/updates/logs/"*logs*.sql
+
+                DB_FULL_CONTENT_VERSION_LINE=$$(cat /docker-entrypoint-initdb.d/06-FullDB.sql | grep 'content' | grep -P 'content_([0-9]{4})_')
+                [[ $$DB_FULL_CONTENT_VERSION_LINE =~ content_([0-9]{4})_ ]]
+                DB_VERSION=$${BASH_REMATCH[1]}
+                DB_VERSION_STRING=$$(echo $$DB_FULL_CONTENT_VERSION_LINE | sed -n 's/.*content_\([^`]*\).*/\1/p')
+
+                # DB_VERSION = 4420 for example        = classic-db
+                # DB_VERSION_CORE = 2218 for example   =  mangos-classic
+
+                LAST_VERSION=0
+                LAST_VERSION_STRING=""
+                echo " -- classic-db-master/Updates/[0-9]*.sql" >> /docker-entrypoint-initdb.d/07-Updates.sql
+
+                NEXT_MILESTONES="0.19 0.20"
+                for NEXT_MILESTONE in $${NEXT_MILESTONES}; do
+                    if [ -d "/tmp/mangos-classic-master/sql/archives/$${NEXT_MILESTONE}/" ]; then
+                        echo " -- mangos-classic-master/sql/archives/$${NEXT_MILESTONE}/*_*_mangos_*.sql" >> /docker-entrypoint-initdb.d/07-Updates.sql
+                        for FILE in $$(find "/tmp/mangos-classic-master/sql/archives/$${NEXT_MILESTONE}" -name 'z*_*_mangos_*.sql'); do
+                            if [ -f "$$FILE" ]; then
+                                FILE_VERSION=$$(echo "$$FILE" | grep -oP 'z\K[0-9]+(?=_.*\.sql)')
+                                echo "Adding $$FILE to 07-Updates.sql"
+                                cat $$FILE >> /docker-entrypoint-initdb.d/07-Updates.sql
+                            fi
+                        done
+                    fi
+                done
+
+                echo " -- mangos-classic-master/sql/updates/mangos/*.sql" >> /docker-entrypoint-initdb.d/07-Updates.sql
+                for FILE in "/tmp/mangos-classic-master/sql/updates/mangos/"*.sql; do
+                    FILE_VERSION=$$(echo "$$FILE" | grep -oP 'z\K[0-9]+(?=_.*\.sql)')
+                    if [[ $$FILE_VERSION -gt $$DB_VERSION_CORE ]]; then
+                        echo "Adding $$FILE to 07-Updates.sql"
+                        cat $$FILE >> /docker-entrypoint-initdb.d/07-Updates.sql
+                    fi
+                done
+
+                # Remove any SAFE_UPDATES
+                sed -i 's/SET sql_safe_updates/-- SET sql_safe_updates/g' /docker-entrypoint-initdb.d/07-Updates.sql
+                sed -i '1s/^/USE `classicmangos`;\nSET SQL_SAFE_UPDATES = 0;\n/' /docker-entrypoint-initdb.d/07-Updates.sql
+                sed -i 's/ENGINE=MyISAM/ENGINE=InnoDB/g' /docker-entrypoint-initdb.d/07-Updates.sql
+                echo -e "\nSET SQL_SAFE_UPDATES = 1;\n" >> /docker-entrypoint-initdb.d/07-Updates.sql
+
+                cd $$PWD
+                # Clean up old folder
+                rm -rf /tmp/classic-db-master
+                rm -rf /tmp/mangos-classic-master
+                echo "Done!"
+            fi
+
+            chmod 0755 /docker-entrypoint-initdb.d/
+            chown -R mysql:mysql /docker-entrypoint-initdb.d/*
+            echo "Starting MySQL...."
+            #sleep infinity
+            docker-entrypoint.sh mysqld --innodb-buffer-pool-size=200M --innodb_buffer_pool_instances=2 --innodb_lock_wait_timeout=600 --pid-file /var/lib/mysql/mysqld.pid
+        environment:
+            MYSQL_ROOT_PASSWORD: root
+            MYSQL_DATABASE: mangos
+            MYSQL_USER: mangos
+            MYSQL_PASSWORD: mangos
+            MANGOSCLASSIC_URL: "https://github.com/cmangos/mangos-classic/archive/refs/heads/master.tar.gz"
+            MANGOSCLASSICDB_URL: "https://github.com/cmangos/classic-db/archive/refs/heads/master.tar.gz"
+
+        volumes:
+            # ==== Volume files can be found in either:
+            # /var/lib/docker/volumes (Linux)
+            # \\wsl$\docker-desktop\mnt\docker-desktop-disk\data\docker\volumes (WSL Windows)
+            # or:
+            # \\wsl.localhost\docker-desktop-data\version-pack-data\community\docker\volumes
+            # or if you have a Synology NAS:
+            # /volume1/@docker/volumes
+            # And then the project name + volume name, example: /var/lib/docker/volumes/dbwowclassic_mysql-datavolume/_data
+            # To delete it, run `docker volume rm dbwowclassic_mysql-datavolume`
+            - mysql-datavolume:/var/lib/mysql
+            # Scripts are downloaded in here. Place sql scripts in here if you want them executed during the first ever startup
+            - ./run-scripts:/docker-entrypoint-initdb.d/:rw
+        healthcheck:
+            test: mysqladmin ping -h 127.0.0.1 -umangos --password=mangos
+            start_period: 5s
+            interval: 5s
+            timeout: 5s
+            retries: 30
+        networks:
+            - wowclassicdb_network
+
+networks:
+    wowclassicdb_network:
+        # driver: bridge
+        name: wowclassicdb
+
+volumes:
+  mysql-datavolume:

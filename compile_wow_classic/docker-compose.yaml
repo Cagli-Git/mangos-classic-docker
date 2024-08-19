@@ -1,0 +1,18 @@
+version: "3.7"
+services:
+    wow_classic_compile:
+        build: .
+        container_name: wowclassic_compiler
+        ports:
+            - 3724:3724
+            - 8085:8085
+        volumes:
+        - ../wow_classic/data:/classicmangos
+        networks:
+            - wowclassic_compiler_network
+
+networks:
+    # join external db network, if it wasn't created it will fail (which also means there's no DB running)
+    wowclassic_compiler_network:
+        name: wowclassicdb
+        external: true

@@ -1,0 +1,37 @@
+services:
+    wow_classic_realmd:
+        build: .
+        container_name: wowclassicserver_realmd
+        command: ./realmd
+        ports:
+            # Realmd port
+            - 3724:3724
+        volumes:
+        - ./data:/cmangos/
+        networks:
+            - wowclassicdb_network
+
+    wow_classic_mangosd:
+        build: .
+        container_name: wowclassicserver_mangosd
+        command: nohup ./mangosd & sleep infinity
+        ports:
+            # Mangos port
+            - 8085:8085
+            # Remote Admin Console
+            # Connect to this pod (localhost if you're running it locally) to port 3443, log in with your account (or admin)
+            # Use Putty with RAW option to log in.
+            # Default Admin:
+            # username: administrator
+            # password: administrator
+            # Commands: https://github.com/dkpminus/mangos-gm-commands
+            - 3443:3443
+        volumes:
+        - ./data:/cmangos/
+        networks:
+            - wowclassicdb_network
+
+networks:
+    wowclassicdb_network:
+        # driver: bridge
+        name: wowclassicdb

@@ -1,0 +1,1 @@
+Place all your WoW client files in here. Wow.exe needs to be in this directory with all the including files and directories

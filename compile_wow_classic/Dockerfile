@@ -22,7 +22,7 @@ RUN mv /cmangos/run/etc/realmd.conf.dist /cmangos/run/etc/realmd.conf
 
 RUN sed -i 's/127.0.0.1;3306;/wowclassicdb;3306;/g' /cmangos/run/etc/mangosd.conf && \
     sed -i 's/127.0.0.1;3306;/wowclassicdb;3306;/g' /cmangos/run/etc/realmd.conf && \
-    sed -i 's/Console.Enable = 0/Console.Enable = 1/g' /cmangos/run/etc/mangosd.conf && \
+    sed -i 's/Console.Enable = 1/Console.Enable = 0/g' /cmangos/run/etc/mangosd.conf && \
     sed -i 's/Ra.Enable = 0/Ra.Enable = 1/g' /cmangos/run/etc/mangosd.conf
 
 RUN echo "Finished compiling"
